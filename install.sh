@@ -269,20 +269,20 @@ flush_rules() {
 show_menu() {
     while true; do
         clear
-        echo -e "${MAGENTA}"
-        echo "******************************************************"
-        echo "       anten-ka канал представляет..."
-        echo "       YouTube: https://www.youtube.com/@antenkaru"
-        echo "******************************************************"
-        echo -e "${NC}"
+        # echo -e "${MAGENTA}"
+        # echo "******************************************************"
+        # echo "       anten-ka канал представляет..."
+        # echo "       YouTube: https://www.youtube.com/@antenkaru"
+        # echo "******************************************************"
+        # echo -e "${NC}"
         
-        echo -e "${YELLOW}Получить инструкции:${NC}"
-        echo -e "1 способ: ${BLUE}https://boosty.to/anten-ka${NC}"
-        echo -e "2 способ: ${BLUE}https://antenka.taplink.ws${NC}"
-        echo -e "3 способ: ${BLUE}https://web.tribute.tg/p/cJu${NC}"
-        echo ""
-        echo -e "${GREEN}💰 Задонатить каналу и автору:${NC} https://pay.cloudtips.ru/p/7410814f"
-        echo -e "------------------------------------------------------"
+        # echo -e "${YELLOW}Получить инструкции:${NC}"
+        # echo -e "1 способ: ${BLUE}https://boosty.to/anten-ka${NC}"
+        # echo -e "2 способ: ${BLUE}https://antenka.taplink.ws${NC}"
+        # echo -e "3 способ: ${BLUE}https://web.tribute.tg/p/cJu${NC}"
+        # echo ""
+        # echo -e "${GREEN}💰 Задонатить каналу и автору:${NC} https://pay.cloudtips.ru/p/7410814f"
+        # echo -e "------------------------------------------------------"
         
         echo -e "1) Настроить ${CYAN}AmneziaWG / WireGuard${NC} (UDP)"
         echo -e "2) Настроить ${CYAN}VLESS / XRay${NC} (TCP)"
@@ -312,5 +312,5 @@ show_menu() {
 # --- ЗАПУСК ---
 check_root
 prepare_system
-show_promo
+#show_promo
 show_menu
