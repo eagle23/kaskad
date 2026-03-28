@@ -830,316 +830,6 @@ EOF
     read -p "Нажмите Enter для возврата в меню..."
 }
 
-# --- NAT46: IPv4 вход → IPv6 выход (через Jool NAT64 kernel) ---
-configure_nat46_jool() {
-    local PROTO="udp"
-
-    echo -e "\n${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║    🌐 WireGuard NAT46: IPv4 → IPv6 (Jool NAT64) ⚡kernel  ║${NC}"
-    echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
-    echo -e "${YELLOW}Kernel-level IPv4→IPv6 translation через Jool NAT64 + static BIB${NC}"
-    echo -e "${YELLOW}Поддерживает множество IPv6 серверов с одного IPv4 адреса${NC}"
-    log_info "Начало настройки NAT46 (IPv4→IPv6) через Jool NAT64"
-
-    # Проверка Jool NAT64
-    if ! modprobe jool 2>/dev/null; then
-        echo -e "\n${RED}[ERROR] Jool NAT64 модуль не найден!${NC}"
-        echo -e ""
-        echo -e "${YELLOW}Для установки на Debian 12:${NC}"
-        echo -e "  ${CYAN}# 1. Добавить репозиторий Jool${NC}"
-        echo -e "  ${CYAN}curl -fsSL https://nicmx.github.io/Jool/keys/apt-key.gpg | gpg --dearmor -o /etc/apt/trusted.gpg.d/jool.gpg${NC}"
-        echo -e "  ${CYAN}echo 'deb https://nicmx.github.io/Jool/debian bookworm main' > /etc/apt/sources.list.d/jool.list${NC}"
-        echo -e ""
-        echo -e "  ${CYAN}# 2. Установить пакеты${NC}"
-        echo -e "  ${CYAN}apt update${NC}"
-        echo -e "  ${CYAN}apt install -y linux-headers-\$(uname -r)${NC}"
-        echo -e "  ${CYAN}apt install -y jool-dkms jool-tools${NC}"
-        echo -e ""
-        echo -e "  ${CYAN}# 3. Загрузить модуль${NC}"
-        echo -e "  ${CYAN}modprobe jool${NC}"
-        echo -e ""
-        log_error "Jool NAT64 модуль не найден"
-        read -p "Нажмите Enter для возврата в меню..."
-        return 1
-    fi
-    echo -e "${GREEN}[✓] Jool NAT64 модуль загружен${NC}"
-
-    # Определение интерфейса и IPv4
-    local IFACE STATIC_IP
-    IFACE=$(ip route get 8.8.8.8 2>/dev/null | grep -oP '(?<=dev )\S+' | head -1)
-    STATIC_IP=$(ip route get 8.8.8.8 2>/dev/null | grep -oP '(?<=src )\S+' | head -1)
-
-    if [[ -z "$IFACE" || -z "$STATIC_IP" ]]; then
-        echo -e "${RED}[ERROR] Не удалось определить сетевой интерфейс или IPv4 адрес!${NC}"
-        log_error "Не удалось определить IFACE или STATIC_IP"
-        read -p "Нажмите Enter..."
-        return 1
-    fi
-    echo -e "${GREEN}[✓] Интерфейс: $IFACE, IPv4: $STATIC_IP${NC}"
-
-    # Включение IPv6 (может быть отключён optimize-vps.sh)
-    echo -e "${YELLOW}[*] Включение IPv6...${NC}"
-    sysctl -w net.ipv6.conf.all.disable_ipv6=0 >/dev/null 2>&1
-    sysctl -w net.ipv6.conf.default.disable_ipv6=0 >/dev/null 2>&1
-    sysctl -w "net.ipv6.conf.${IFACE}.disable_ipv6=0" >/dev/null 2>&1
-    sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1
-    echo -e "${GREEN}[✓] IPv6 включён${NC}"
-
-    # Ввод IPv6 адреса
-    local TARGET_IPV6
-    while true; do
-        echo -e "\nВведите IPv6 адрес зарубежного WireGuard сервера:"
-        echo -e "${YELLOW}(например: 2001:db8::1 или fd00::1)${NC}"
-        read -p "> " TARGET_IPV6
-        TARGET_IPV6="${TARGET_IPV6#[}"
-        TARGET_IPV6="${TARGET_IPV6%]}"
-        if validate_ipv6 "$TARGET_IPV6"; then
-            break
-        else
-            echo -e "${RED}Ошибка: введите корректный IPv6 адрес!${NC}"
-        fi
-    done
-
-    # Ввод входящего порта (IPv4)
-    local LISTEN_PORT
-    while true; do
-        echo -e "Введите входящий порт (на этом сервере, IPv4):"
-        read -p "> " LISTEN_PORT
-        if validate_port "$LISTEN_PORT"; then
-            if ! check_port_conflict "$LISTEN_PORT" "$PROTO"; then
-                echo -e "${YELLOW}Порт уже используется. Продолжить? (y/n)${NC}"
-                read -p "> " override
-                [[ "$override" == "y" ]] && break
-            else
-                break
-            fi
-        else
-            echo -e "${RED}Ошибка: порт должен быть числом от 1 до $MAX_PORT!${NC}"
-        fi
-    done
-
-    # Ввод исходящего порта
-    local TARGET_PORT
-    while true; do
-        echo -e "Введите исходящий порт (на зарубежном сервере) [${LISTEN_PORT}]:"
-        read -p "> " TARGET_PORT
-        TARGET_PORT="${TARGET_PORT:-$LISTEN_PORT}"
-        if validate_port "$TARGET_PORT"; then
-            break
-        else
-            echo -e "${RED}Ошибка: порт должен быть числом от 1 до $MAX_PORT!${NC}"
-        fi
-    done
-
-    # Комментарий к правилу
-    local RULE_COMMENT
-    echo -e "Описание правила (необязательно, Enter — пропустить):"
-    read -p "> " RULE_COMMENT
-
-    # Проверка IPv6 связности
-    echo -e "${YELLOW}[*] Проверка доступности IPv6...${NC}"
-    if ping -6 -c 1 -W 3 "$TARGET_IPV6" &>/dev/null; then
-        echo -e "${GREEN}[✓] IPv6 $TARGET_IPV6 доступен${NC}"
-        log_info "Целевой IPv6 $TARGET_IPV6 доступен"
-    else
-        echo -e "${YELLOW}[!] IPv6 $TARGET_IPV6 не отвечает на ping (может быть заблокирован ICMP)${NC}"
-        log_warn "Целевой IPv6 $TARGET_IPV6 не отвечает на ping6"
-        echo -e "Продолжить? (y/n)"
-        read -p "> " continue_anyway
-        [[ "$continue_anyway" != "y" ]] && return 1
-    fi
-
-    # Бэкап
-    echo -e "${YELLOW}[*] Создание бэкапа...${NC}"
-    create_backup || true
-
-    local INSTANCE_NAME="kaskad-jool-${LISTEN_PORT}"
-    local SERVICE_NAME="kaskad-jool-${LISTEN_PORT}"
-    local JOOL_CONF_DIR="/etc/jool"
-    local JOOL_CONF_FILE="${JOOL_CONF_DIR}/${INSTANCE_NAME}.conf"
-
-    echo -e "\n${CYAN}═══ JOOL NAT64 РЕЖИМ (kernel-level) ═══${NC}"
-    echo -e "${GREEN}[✓] Jool NAT64: kernel-space IPv4↔IPv6 translation${NC}"
-    echo -e "${GREEN}[✓] Static BIB: port-level mapping${NC}"
-    echo -e "${GREEN}[✓] systemd: автозапуск + загрузка конфига при boot${NC}"
-
-    # Удаление старого instance если есть
-    if jool instance display "$INSTANCE_NAME" &>/dev/null 2>&1; then
-        echo -e "${YELLOW}[*] Удаление предыдущего Jool instance...${NC}"
-        jool instance remove "$INSTANCE_NAME" 2>/dev/null || true
-    fi
-    if systemctl is-active "$SERVICE_NAME" &>/dev/null; then
-        echo -e "${YELLOW}[*] Остановка предыдущего сервиса...${NC}"
-        systemctl stop "$SERVICE_NAME" 2>/dev/null || true
-    fi
-
-    # Создание директории конфигов
-    mkdir -p "$JOOL_CONF_DIR"
-
-    # Создание JSON конфига Jool
-    echo -e "${YELLOW}[*] Создание конфигурации Jool...${NC}"
-    cat > "$JOOL_CONF_FILE" << EOF
-{
-  "instance": "${INSTANCE_NAME}",
-  "framework": "netfilter",
-  "global": {
-    "pool6": "64:ff9b::/96",
-    "manually-enabled": true
-  },
-  "pool4": [
-    {
-      "protocol": "UDP",
-      "prefix": "${STATIC_IP}/32",
-      "port range": "${LISTEN_PORT}-${LISTEN_PORT}"
-    }
-  ],
-  "bib": [
-    {
-      "protocol": "UDP",
-      "ipv4 address": "${STATIC_IP}#${LISTEN_PORT}",
-      "ipv6 address": "${TARGET_IPV6}#${TARGET_PORT}"
-    }
-  ]
-}
-EOF
-    log_info "Jool конфиг записан: $JOOL_CONF_FILE"
-
-    # Создание systemd сервиса
-    echo -e "${YELLOW}[*] Создание systemd сервиса...${NC}"
-    cat > "/etc/systemd/system/${SERVICE_NAME}.service" << EOF
-[Unit]
-Description=Kaskad Jool NAT64: IPv4 UDP:${LISTEN_PORT} -> [${TARGET_IPV6}]:${TARGET_PORT}
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStartPre=/sbin/modprobe jool
-ExecStartPre=/sbin/sysctl -w net.ipv6.conf.all.disable_ipv6=0
-ExecStartPre=/sbin/sysctl -w net.ipv6.conf.all.forwarding=1
-ExecStart=/usr/bin/jool file handle ${JOOL_CONF_FILE}
-ExecStop=/usr/bin/jool instance remove ${INSTANCE_NAME}
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-
-    # Запуск сервиса
-    echo -e "${YELLOW}[*] Запуск Jool instance...${NC}"
-    if ! systemctl start "$SERVICE_NAME" 2>/tmp/jool-error-$$.log; then
-        log_error "Ошибка запуска Jool NAT64:"
-        cat /tmp/jool-error-$$.log >&2
-        rm -f /tmp/jool-error-$$.log
-        echo -e "${RED}[ERROR] Не удалось запустить Jool! Проверьте: journalctl -u $SERVICE_NAME${NC}"
-        read -p "Нажмите Enter..."
-        return 1
-    fi
-
-    # Проверка что instance работает
-    sleep 1
-    if ! jool instance display "$INSTANCE_NAME" &>/dev/null 2>&1; then
-        echo -e "${RED}[ERROR] Jool instance не запустился! Проверьте: journalctl -u $SERVICE_NAME${NC}"
-        log_error "Jool instance $INSTANCE_NAME не обнаружен после запуска"
-        rm -f /tmp/jool-error-$$.log
-        read -p "Нажмите Enter..."
-        return 1
-    fi
-
-    systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
-    rm -f /tmp/jool-error-$$.log
-    echo -e "${GREEN}[✓] Jool instance запущен и добавлен в автозагрузку${NC}"
-
-    # Разрешаем входящий UDP в iptables
-    if ! iptables -C INPUT -p udp --dport "$LISTEN_PORT" -j ACCEPT 2>/dev/null; then
-        iptables -A INPUT -p udp --dport "$LISTEN_PORT" -j ACCEPT
-    fi
-
-    # ip6tables для исходящего трафика
-    if ! ip6tables -C INPUT -p udp --dport "$TARGET_PORT" -j ACCEPT 2>/dev/null; then
-        ip6tables -A INPUT -p udp --dport "$TARGET_PORT" -j ACCEPT
-    fi
-    if ! ip6tables -C FORWARD -p udp -d "$TARGET_IPV6" --dport "$TARGET_PORT" -j ACCEPT 2>/dev/null; then
-        ip6tables -A FORWARD -p udp -d "$TARGET_IPV6" --dport "$TARGET_PORT" -j ACCEPT
-    fi
-    if ! ip6tables -C FORWARD -p udp -s "$TARGET_IPV6" --sport "$TARGET_PORT" -j ACCEPT 2>/dev/null; then
-        ip6tables -A FORWARD -p udp -s "$TARGET_IPV6" --sport "$TARGET_PORT" -j ACCEPT
-    fi
-
-    # UFW
-    if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-        ufw allow "$LISTEN_PORT"/udp comment "kaskad-jool-$LISTEN_PORT" >/dev/null 2>&1 || true
-    fi
-
-    # UDP Buffer Tuning
-    echo -e "${YELLOW}[*] Настройка UDP буферов для WireGuard...${NC}"
-    {
-        sysctl -w net.core.rmem_default=262144
-        sysctl -w net.core.wmem_default=262144
-        sysctl -w net.core.rmem_max=524288
-        sysctl -w net.core.wmem_max=524288
-        sysctl -w net.ipv4.udp_rmem_min=16384
-        sysctl -w net.ipv4.udp_wmem_min=16384
-        log_info "UDP буферы оптимизированы"
-    } >/dev/null 2>&1
-
-    # Network Queue
-    {
-        sysctl -w net.core.netdev_max_backlog=1000
-        sysctl -w net.core.netdev_budget=300
-        sysctl -w net.core.netdev_budget_usecs=2000
-    } >/dev/null 2>&1
-    echo -e "${GREEN}[✓] Сетевые оптимизации применены${NC}"
-
-    # Сохранение iptables
-    netfilter-persistent save >/dev/null 2>&1 || {
-        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-        ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
-    }
-
-    # Сохранение в конфигурацию
-    save_rule_config "jool-nat64" "$LISTEN_PORT" "$TARGET_IPV6" "$TARGET_PORT" "$RULE_COMMENT"
-    echo -e "${GREEN}[✓] Конфигурация сохранена${NC}"
-
-    # Финальный отчет
-    echo -e "\n${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║      ✅ JOOL NAT64 ТУННЕЛЬ НАСТРОЕН ✅                      ║${NC}"
-    echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "${GREEN}═══ КОНФИГУРАЦИЯ ═══${NC}"
-    echo -e "${CYAN}  Тип:${NC}          NAT46 (IPv4 вход → IPv6 выход)"
-    echo -e "${CYAN}  Движок:${NC}       ${GREEN}Jool NAT64 (kernel-space)${NC}"
-    echo -e "${CYAN}  Протокол:${NC}     UDP (WireGuard)"
-    echo -e "${CYAN}  Вход. порт:${NC}   $LISTEN_PORT (IPv4: $STATIC_IP)"
-    echo -e "${CYAN}  Назначение:${NC}   [$TARGET_IPV6]:$TARGET_PORT (IPv6)"
-    echo -e "${CYAN}  Instance:${NC}     $INSTANCE_NAME"
-    echo -e "${CYAN}  Конфиг:${NC}       $JOOL_CONF_FILE"
-    echo ""
-    echo -e "${GREEN}═══ ОПТИМИЗАЦИИ ═══${NC}"
-    echo -e "${CYAN}  [✓] Jool NAT64:${NC}      kernel-space IPv4↔IPv6 (~0.05ms latency)"
-    echo -e "${CYAN}  [✓] Static BIB:${NC}      port-level mapping (многие IPv6 с одного IPv4)"
-    echo -e "${CYAN}  [✓] systemd:${NC}         auto-restart + модуль при boot"
-    echo -e "${CYAN}  [✓] UDP Buffers:${NC}     512KB max (sysctl)"
-    echo -e "${CYAN}  [✓] Low Latency:${NC}     network queue 1000 packets"
-    echo ""
-    echo -e "${YELLOW}═══ ЧТО ДАЛЬШЕ? ═══${NC}"
-    echo -e "1. В WireGuard клиенте замените:"
-    echo -e "   ${RED}Endpoint = [${TARGET_IPV6}]:$TARGET_PORT${NC}"
-    echo -e "   на:"
-    echo -e "   ${GREEN}Endpoint = $(curl -s4 -m 3 ifconfig.me 2>/dev/null || echo "<IPv4-ЭТОГО-СЕРВЕРА>"):$LISTEN_PORT${NC}"
-    echo ""
-    echo -e "2. Управление:"
-    echo -e "   ${CYAN}systemctl status $SERVICE_NAME${NC}"
-    echo -e "   ${CYAN}jool -i $INSTANCE_NAME bib display --udp${NC}"
-    echo -e "   ${CYAN}jool -i $INSTANCE_NAME session display --udp${NC}"
-    echo ""
-    log_success "Jool NAT64: IPv4 UDP:$LISTEN_PORT -> [$TARGET_IPV6]:$TARGET_PORT (kernel)"
-
-    read -p "Нажмите Enter для возврата в меню..."
-}
-
 # --- ЯДРО НАСТРОЙКИ ---
 configure_rule() {
     local PROTO=$1
@@ -1427,30 +1117,6 @@ list_active_rules() {
         fi
     done < <(systemctl list-unit-files 'kaskad-nat46-*.service' --no-legend 2>/dev/null | awk '{print $1}')
 
-    # Jool NAT64 правила из systemd
-    while IFS= read -r svc; do
-        if [[ -n "$svc" ]]; then
-            local j_port j_target j_comment
-            j_port=$(echo "$svc" | grep -oP '(?<=kaskad-jool-)\d+')
-            if [[ -n "$j_port" ]]; then
-                j_target=$(systemctl show "$svc" --property=Description --value 2>/dev/null | grep -oP '\[.*\]:\d+' || echo "IPv6")
-                j_comment=$(get_rule_comment "jool-nat64" "$j_port")
-                if [[ -z "$j_comment" ]]; then
-                    if systemctl is-active "$svc" &>/dev/null; then
-                        j_comment="active"
-                    else
-                        j_comment="dead"
-                    fi
-                fi
-                r_ports[$idx]="$j_port"
-                r_protos[$idx]="jool-nat64"
-                r_dests[$idx]="$j_target"
-                r_comments[$idx]="$j_comment"
-                ((idx++))
-            fi
-        fi
-    done < <(systemctl list-unit-files 'kaskad-jool-*.service' --no-legend 2>/dev/null | awk '{print $1}')
-
     if [[ $idx -eq 0 ]]; then
         echo -e "${YELLOW}Нет активных правил.${NC}"
         echo ""
@@ -1557,27 +1223,6 @@ delete_single_rule() {
         fi
     done < <(systemctl list-unit-files 'kaskad-nat46-*.service' --no-legend 2>/dev/null | awk '{print $1}')
 
-    # Jool NAT64 правила из systemd
-    while IFS= read -r svc; do
-        if [[ -n "$svc" ]]; then
-            local j_port j_target
-            j_port=$(echo "$svc" | grep -oP '(?<=kaskad-jool-)\d+')
-            j_target=$(systemctl show "$svc" --property=Description --value 2>/dev/null | grep -oP '\[.*\]:\d+' || echo "IPv6")
-            if [[ -n "$j_port" ]]; then
-                RULES_LIST[$i]="$j_port:jool-nat64:$j_target"
-                RULES_TYPE[$i]="jool"
-                local j_comment
-                j_comment=$(get_rule_comment "jool-nat64" "$j_port")
-                if [[ -n "$j_comment" ]]; then
-                    echo -e "${YELLOW}[$i]${NC} Порт: $j_port (${GREEN}jool-nat64${NC}) -> $j_target  ${CYAN}[$j_comment]${NC}"
-                else
-                    echo -e "${YELLOW}[$i]${NC} Порт: $j_port (${GREEN}jool-nat64${NC}) -> $j_target"
-                fi
-                ((i++))
-            fi
-        fi
-    done < <(systemctl list-unit-files 'kaskad-jool-*.service' --no-legend 2>/dev/null | awk '{print $1}')
-
     if [ ${#RULES_LIST[@]} -eq 0 ]; then
         echo -e "${RED}Нет активных правил.${NC}"
         read -p "Нажмите Enter..."
@@ -1624,39 +1269,6 @@ delete_single_rule() {
         remove_rule_config "nat46" "$d_port" "$d_ipv6" "$d_target_port"
 
         log_info "Сервис $svc_name удалён"
-
-    elif [[ "$rule_type" == "jool" ]]; then
-        # === Удаление Jool NAT64 правила ===
-        local svc_name="kaskad-jool-${d_port}"
-
-        # Удаление Jool instance из ядра
-        jool instance remove "kaskad-jool-${d_port}" 2>/dev/null || true
-
-        # Остановка и удаление systemd сервиса
-        systemctl stop "$svc_name" 2>/dev/null || true
-        systemctl disable "$svc_name" 2>/dev/null || true
-        rm -f "/etc/systemd/system/${svc_name}.service"
-
-        # Удаление конфига Jool
-        rm -f "/etc/jool/kaskad-jool-${d_port}.conf"
-        systemctl daemon-reload
-
-        # Удаление правил firewall
-        iptables -D INPUT -p udp --dport "$d_port" -j ACCEPT 2>/dev/null || true
-        ip6tables -D INPUT -p udp --dport "$d_port" -j ACCEPT 2>/dev/null || true
-
-        # UFW
-        if command -v ufw &>/dev/null; then
-            ufw delete allow "$d_port"/udp 2>/dev/null || true
-        fi
-
-        # Удаление из конфигурации
-        local d_ipv6="${d_dest%%]:*}"
-        d_ipv6="${d_ipv6#[}"
-        local d_target_port="${d_dest##*]:}"
-        remove_rule_config "jool-nat64" "$d_port" "$d_ipv6" "$d_target_port"
-
-        log_success "Jool NAT64 правило удалено: порт $d_port"
 
     else
         # === Удаление IPv4 правила (iptables) — старая логика ===
@@ -1735,24 +1347,6 @@ flush_rules() {
         systemctl daemon-reload 2>/dev/null || true
         log_info "NAT46 socat сервисы удалены"
 
-        # Очистка Jool NAT64 (systemd сервисы + конфиги + kernel instances)
-        while IFS= read -r svc; do
-            if [[ -n "$svc" ]]; then
-                systemctl stop "$svc" 2>/dev/null || true
-                systemctl disable "$svc" 2>/dev/null || true
-                rm -f "/etc/systemd/system/${svc}"
-            fi
-        done < <(systemctl list-unit-files 'kaskad-jool-*.service' --no-legend 2>/dev/null | awk '{print $1}')
-        rm -f /etc/jool/kaskad-jool-*.conf
-        # Удаление всех Jool instances из ядра
-        if command -v jool &>/dev/null; then
-            jool instance display 2>/dev/null | grep -oP 'kaskad-jool-\d+' | while read -r inst; do
-                jool instance remove "$inst" 2>/dev/null || true
-            done
-        fi
-        systemctl daemon-reload 2>/dev/null || true
-        log_info "Jool NAT64 сервисы удалены"
-
         # Сохранение
         netfilter-persistent save > /dev/null 2>&1 || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 
@@ -1827,23 +1421,6 @@ test_rule() {
         systemctl status "$nat46_svc" --no-pager 2>/dev/null | head -5 || echo "  Нет NAT46 сервиса"
     fi
 
-    # Jool NAT64 правило
-    local jool_svc="kaskad-jool-${test_port}.service"
-    if systemctl list-unit-files "$jool_svc" --no-legend 2>/dev/null | grep -q "$jool_svc"; then
-        echo -e "\n${CYAN}Jool NAT64:${NC}"
-        systemctl status "$jool_svc" --no-pager 2>/dev/null | head -5 || echo "  Нет Jool сервиса"
-        local inst_name="kaskad-jool-${test_port}"
-        if jool instance display "$inst_name" &>/dev/null 2>&1; then
-            echo -e "  ${GREEN}[OK] Instance активен${NC}"
-            echo -e "  ${CYAN}BIB записи:${NC}"
-            jool -i "$inst_name" bib display --udp 2>/dev/null || echo "    Нет BIB записей"
-            echo -e "  ${CYAN}Сессии:${NC}"
-            jool -i "$inst_name" session display --udp 2>/dev/null | head -5 || echo "    Нет активных сессий"
-        else
-            echo -e "  ${RED}[FAIL] Instance не найден в ядре${NC}"
-        fi
-    fi
-
     echo -e "\n${CYAN}Прослушиваемые порты:${NC}"
     ss -tulpn | grep ":$test_port " || echo "  Порт не прослушивается"
 
@@ -1864,21 +1441,20 @@ show_menu() {
         echo -e "  1) Настроить ${CYAN}WireGuard${NC} (стандартный режим)"
         echo -e "  2) Настроить ${GREEN}WireGuard${NC} ${YELLOW}⚡ ОПТИМИЗИРОВАННЫЙ${NC} (-40% CPU)"
         echo -e "  3) Настроить ${GREEN}WireGuard${NC} ${CYAN}🌐 IPv4→IPv6 (NAT46 socat)${NC}"
-        echo -e "  4) Настроить ${GREEN}WireGuard${NC} ${CYAN}🌐 IPv4→IPv6 (NAT46 Jool)${NC} ${YELLOW}⚡kernel${NC}"
-        echo -e "  5) Настроить ${CYAN}VLESS / XRay${NC} (TCP)"
+        echo -e "  4) Настроить ${CYAN}VLESS / XRay${NC} (TCP)"
         echo ""
 
         echo -e "${GREEN}📋 Управление:${NC}"
-        echo -e "  6) Посмотреть активные правила"
-        echo -e "  7) ${RED}Удалить одно правило${NC}"
-        echo -e "  8) ${RED}Сбросить ВСЕ настройки${NC}"
+        echo -e "  5) Посмотреть активные правила"
+        echo -e "  6) ${RED}Удалить одно правило${NC}"
+        echo -e "  7) ${RED}Сбросить ВСЕ настройки${NC}"
         echo ""
 
         echo -e "${YELLOW}🔧 Дополнительно:${NC}"
-        echo -e "  9) 📚 ИНСТРУКЦИЯ (Как настроить)"
-        echo -e " 10) 📝 Показать логи"
-        echo -e " 11) 🧪 Тест правила"
-        echo -e " 12) 💾 Восстановить из бэкапа"
+        echo -e "  8) 📚 ИНСТРУКЦИЯ (Как настроить)"
+        echo -e "  9) 📝 Показать логи"
+        echo -e " 10) 🧪 Тест правила"
+        echo -e " 11) 💾 Восстановить из бэкапа"
         echo ""
 
         echo -e "  0) Выход"
@@ -1889,15 +1465,14 @@ show_menu() {
             1) configure_rule "udp" "WireGuard" ;;
             2) configure_wireguard_optimized ;;
             3) configure_nat46 ;;
-            4) configure_nat46_jool ;;
-            5) configure_rule "tcp" "VLESS" ;;
-            6) list_active_rules ;;
-            7) delete_single_rule ;;
-            8) flush_rules ;;
-            9) show_instructions ;;
-           10) show_logs ;;
-           11) test_rule ;;
-           12) restore_backup ;;
+            4) configure_rule "tcp" "VLESS" ;;
+            5) list_active_rules ;;
+            6) delete_single_rule ;;
+            7) flush_rules ;;
+            8) show_instructions ;;
+            9) show_logs ;;
+           10) test_rule ;;
+           11) restore_backup ;;
             0)
                 log_info "Выход из скрипта"
                 echo -e "${GREEN}До свидания!${NC}"
