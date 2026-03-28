@@ -197,6 +197,7 @@ get_default_interface() {
 }
 
 check_bbr_support() {
+    modprobe tcp_bbr 2>/dev/null || true
     if [[ -f /proc/sys/net/ipv4/tcp_available_congestion_control ]]; then
         if grep -q "bbr" /proc/sys/net/ipv4/tcp_available_congestion_control; then
             return 0
