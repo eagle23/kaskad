@@ -16,11 +16,10 @@ Client (WireGuard) ──► VPS (Kaskad NAT) ──► Foreign VPN Server
 
 ## Возможности
 
-- **4 режима работы:**
+- **3 режима работы:**
   - WireGuard стандартный (UDP, MASQUERADE)
   - WireGuard оптимизированный (UDP, SNAT, batch rules, buffer tuning)
   - NAT46 через socat (IPv4 вход -> IPv6 выход, userspace relay)
-  - NAT46 через Jool (IPv4 вход -> IPv6 выход, kernel-space NAT64)
 - **VLESS/XRay** проброс (TCP)
 - Управление правилами: создание, просмотр, удаление, полный сброс
 - Автоматический backup/rollback при ошибках (последние 10 бэкапов)
@@ -39,7 +38,6 @@ Client (WireGuard) ──► VPS (Kaskad NAT) ──► Foreign VPN Server
 - **Права:** root
 - **Пакеты** (ставятся автоматически): `iptables`, `iptables-persistent`, `netfilter-persistent`
 - **Для NAT46 socat:** `socat` (ставится автоматически)
-- **Для NAT46 Jool:** `jool-dkms`, `jool-tools` (ручная установка, скрипт покажет инструкцию)
 
 ## Быстрый старт
 
@@ -68,19 +66,18 @@ sudo bash kaskad.sh
   1) WireGuard (стандартный режим)
   2) WireGuard ⚡ ОПТИМИЗИРОВАННЫЙ (-40% CPU)
   3) WireGuard 🌐 IPv4→IPv6 (NAT46 socat)
-  4) WireGuard 🌐 IPv4→IPv6 (NAT46 Jool) ⚡kernel
-  5) VLESS / XRay (TCP)
+  4) VLESS / XRay (TCP)
 
 📋 Управление:
-  6) Посмотреть активные правила
-  7) Удалить одно правило
-  8) Сбросить ВСЕ настройки
+  5) Посмотреть активные правила
+  6) Удалить одно правило
+  7) Сбросить ВСЕ настройки
 
 🔧 Дополнительно:
-  9) Инструкция
- 10) Показать логи
- 11) Тест правила
- 12) Восстановить из бэкапа
+  8) Инструкция
+  9) Показать логи
+ 10) Тест правила
+ 11) Восстановить из бэкапа
 
   0) Выход
 ```
@@ -123,29 +120,6 @@ iptables FORWARD            → conntrack state matching
 Client (IPv4) ──► VPS socat (UDP4-LISTEN → UDP6) ──► Foreign Server (IPv6)
 ```
 
-### 4. NAT46 через Jool NAT64
-
-Kernel-space альтернатива socat. Работает на уровне netfilter, latency ~0.05ms.
-
-- Модуль ядра `jool` с static BIB (Binding Information Base)
-- Systemd-сервис `kaskad-jool-<port>` с auto-load при boot
-- JSON конфиг в `/etc/jool/`
-- Поддержка множества IPv6 серверов с одного IPv4
-
-```
-Client (IPv4) ──► VPS Jool NAT64 (kernel) ──► Foreign Server (IPv6)
-```
-
-**Установка Jool** (если не установлен, скрипт покажет эту инструкцию):
-
-```bash
-curl -fsSL https://nicmx.github.io/Jool/keys/apt-key.gpg | gpg --dearmor -o /etc/apt/trusted.gpg.d/jool.gpg
-echo 'deb https://nicmx.github.io/Jool/debian bookworm main' > /etc/apt/sources.list.d/jool.list
-apt update
-apt install -y linux-headers-$(uname -r) jool-dkms jool-tools
-modprobe jool
-```
-
 ## Производительность
 
 Замеры на 1 CPU VPS (500 Mbps):
@@ -163,7 +137,6 @@ modprobe jool
 /var/log/kaskad.log              # Логи
 /root/kaskad-backups/            # Бэкапы iptables (последние 10)
 /etc/kaskad/rules.conf           # Конфигурация правил
-/etc/jool/kaskad-jool-*.conf     # Конфиги Jool (если используется)
 /etc/systemd/system/kaskad-*     # Systemd сервисы NAT46
 ```
 
@@ -179,7 +152,6 @@ proto|listen_port|target_ip|target_port|timestamp|comment
 ```
 udp-ultra|51820|203.0.113.50|51820|1711531200|main wg server
 nat46|51821|2001:db8::1|51820|1711531300|ipv6 server
-jool-nat64|51822|fd00::1|51820|1711531400|jool kernel
 tcp|443|203.0.113.50|443|1711531500|vless
 ```
 
@@ -197,11 +169,6 @@ iptables -S FORWARD | grep <port>
 # NAT46 socat
 systemctl status kaskad-nat46-<port>
 journalctl -u kaskad-nat46-<port> -f
-
-# NAT46 Jool
-systemctl status kaskad-jool-<port>
-jool -i kaskad-jool-<port> bib display --udp
-jool -i kaskad-jool-<port> session display --udp
 
 # Логи
 tail -f /var/log/kaskad.log
